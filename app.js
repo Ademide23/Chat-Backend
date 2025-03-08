@@ -99,53 +99,64 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-app.post('/api/login', async (req, res, next) => {
+app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
         if (!email || !password) {
-            res.status(400).send('Please fill all required fields');
-        } else {
-            const user = await Users.findOne({ email });
-            if (!user) {
-                res.status(400).send('User email or password is incorrect');
-            } else {
-                const validateUser = await bcryptjs.compare(password, user.password);
-                if (!validateUser) {
-                    res.status(400).send('User email or password is incorrect');
-                } else {
-                    const payload = {
-                        userId: user._id,
-                        email: user.email
-                    }
-                    const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY || 'THIS_IS_A_JWT_SECRET_KEY';
-
-                    jwt.sign(payload, JWT_SECRET_KEY, { expiresIn: 84600 }, async (err, token) => {
-                        await Users.updateOne({ _id: user._id }, {
-                            $set: { token }
-                        })
-                        user.save();
-                        return res.status(200).json({ user: { id: user._id, email: user.email, fullName: user.fullName }, token: token })
-                    })
-                }
-            }
+            return res.status(400).json({ success: false, message: 'Please fill all required fields' });
         }
+        
+        const user = await Users.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ success: false, message: 'User email or password is incorrect' });
+        }
+        
+        const validateUser = await bcryptjs.compare(password, user.password);
+        if (!validateUser) {
+            return res.status(400).json({ success: false, message: 'User email or password is incorrect' });
+        }
+        
+        const payload = {
+            userId: user._id,
+            email: user.email
+        }
+        const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY || 'THIS_IS_A_JWT_SECRET_KEY';
 
+        jwt.sign(payload, JWT_SECRET_KEY, { expiresIn: 84600 }, async (err, token) => {
+            if (err) return handleError(res, err, 'Error generating token');
+            
+            try {
+                await Users.updateOne({ _id: user._id }, { $set: { token } });
+                return res.status(200).json({ 
+                    success: true, 
+                    user: { id: user._id, email: user.email, fullName: user.fullName }, 
+                    token 
+                });
+            } catch (updateError) {
+                return handleError(res, updateError, 'Error updating user token');
+            }
+        });
     } catch (error) {
-        console.log(error, 'Error')
+        return handleError(res, error);
     }
-})
+});
 
 app.post('/api/conversation', async (req, res) => {
     try {
         const { senderId, receiverId } = req.body;
-        const newCoversation = new Conversations({ members: [senderId, receiverId] });
-        await newCoversation.save();
-        res.status(200).send('Conversation created successfully');
+        
+        if (!senderId || !receiverId) {
+            return res.status(400).json({ success: false, message: 'Both senderId and receiverId are required' });
+        }
+        
+        const newConversation = new Conversations({ members: [senderId, receiverId] });
+        await newConversation.save();
+        res.status(200).json({ success: true, message: 'Conversation created successfully' });
     } catch (error) {
-        console.log(error, 'Error')
+        return handleError(res, error, 'Error creating conversation');
     }
-})
+});
 
 app.get('/api/conversations/:userId', async (req, res) => {
     try {
@@ -165,23 +176,32 @@ app.get('/api/conversations/:userId', async (req, res) => {
 app.post('/api/message', async (req, res) => {
     try {
         const { conversationId, senderId, message, receiverId = '' } = req.body;
-        if (!senderId || !message) return res.status(400).send('Please fill all required fields')
-        if (conversationId === 'new' && receiverId) {
-            const newCoversation = new Conversations({ members: [senderId, receiverId] });
-            await newCoversation.save();
-            const newMessage = new Messages({ conversationId: newCoversation._id, senderId, message });
-            await newMessage.save();
-            return res.status(200).send('Message sent successfully');
-        } else if (!conversationId && !receiverId) {
-            return res.status(400).send('Please fill all required fields')
+        
+        if (!senderId || !message) {
+            return res.status(400).json({ success: false, message: 'Please fill all required fields' });
         }
+        
+        if (conversationId === 'new' && receiverId) {
+            try {
+                const newConversation = new Conversations({ members: [senderId, receiverId] });
+                await newConversation.save();
+                const newMessage = new Messages({ conversationId: newConversation._id, senderId, message });
+                await newMessage.save();
+                return res.status(200).json({ success: true, message: 'Message sent successfully' });
+            } catch (innerError) {
+                return handleError(res, innerError, 'Error creating new conversation and message');
+            }
+        } else if (!conversationId && !receiverId) {
+            return res.status(400).json({ success: false, message: 'Please fill all required fields' });
+        }
+        
         const newMessage = new Messages({ conversationId, senderId, message });
         await newMessage.save();
-        res.status(200).send('Message sent successfully');
+        res.status(200).json({ success: true, message: 'Message sent successfully' });
     } catch (error) {
-        console.log(error, 'Error')
+        return handleError(res, error, 'Error sending message');
     }
-})
+});
 
 app.get('/api/message/:conversationId', async (req, res) => {
     try {

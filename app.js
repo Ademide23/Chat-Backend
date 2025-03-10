@@ -65,7 +65,12 @@ io.on('connection', socket => {
         users = users.filter(user => user.socketId !== socket.id);
         io.emit('getUsers', users);
     });
-    // io.emit('getUsers', socket.userId);
+
+    // Add logout handler
+    socket.on('logout', (userId) => {
+        users = users.filter(user => user.userId !== userId);
+        io.emit('getUsers', users);
+    });
 });
 
 // Routes
@@ -242,6 +247,132 @@ app.get('/api/users/:userId', async (req, res) => {
         console.log('Error', error)
     }
 })
+
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
+    }
+    
+    try {
+        const JWT_SECRET_KEY = process.env.JWT_SECRET_KEY || 'THIS_IS_A_JWT_SECRET_KEY';
+        const decoded = jwt.verify(token, JWT_SECRET_KEY);
+        req.user = decoded;
+        next();
+    } catch (error) {
+        return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+};
+
+// Get user profile
+app.get('/api/profile/:userId', verifyToken, async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        
+        // Check if the requesting user has permission to view this profile
+        if (req.user.userId !== userId) {
+            return res.status(403).json({ success: false, message: 'Access denied' });
+        }
+        
+        const user = await Users.findById(userId).select('-password');
+        
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        
+        return res.status(200).json({ success: true, user });
+    } catch (error) {
+        return handleError(res, error, 'Error fetching user profile');
+    }
+});
+
+// Edit user profile
+app.put('/api/profile/:userId', verifyToken, async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        
+        // Check if the requesting user has permission to edit this profile
+        if (req.user.userId !== userId) {
+            return res.status(403).json({ success: false, message: 'Access denied' });
+        }
+        
+        const { fullName, email, bio, profilePicture, currentPassword, newPassword } = req.body;
+        
+        // Find the user
+        const user = await Users.findById(userId);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        
+        // Prepare update object
+        const updateData = {};
+        
+        // Update basic info if provided
+        if (fullName) updateData.fullName = fullName;
+        if (bio) updateData.bio = bio;
+        if (profilePicture) updateData.profilePicture = profilePicture;
+        
+        // Handle email change (requires validation)
+        if (email && email !== user.email) {
+            const emailExists = await Users.findOne({ email });
+            if (emailExists) {
+                return res.status(400).json({ success: false, message: 'Email already in use' });
+            }
+            updateData.email = email;
+        }
+        
+        // Handle password change
+        if (currentPassword && newPassword) {
+            const isPasswordValid = await bcryptjs.compare(currentPassword, user.password);
+            if (!isPasswordValid) {
+                return res.status(400).json({ success: false, message: 'Current password is incorrect' });
+            }
+            
+            // Hash the new password
+            updateData.password = await bcryptjs.hash(newPassword, 10);
+        }
+        
+        // Update the user
+        const updatedUser = await Users.findByIdAndUpdate(
+            userId,
+            { $set: updateData },
+            { new: true }
+        ).select('-password');
+        
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Profile updated successfully',
+            user: updatedUser
+        });
+    } catch (error) {
+        return handleError(res, error, 'Error updating user profile');
+    }
+});
+
+// Add logout route
+app.post('/api/logout', verifyToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        
+        // Remove token from user document
+        await Users.findByIdAndUpdate(userId, {
+            $set: { token: null }
+        });
+        
+        // Remove user from active socket users
+        users = users.filter(user => user.userId !== userId);
+        io.emit('getUsers', users);
+        
+        return res.status(200).json({
+            success: true,
+            message: 'Logged out successfully'
+        });
+    } catch (error) {
+        return handleError(res, error, 'Error during logout');
+    }
+});
 
 app.listen(port, () => {
     console.log('listening on port ' + port);
